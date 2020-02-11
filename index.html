@@ -1,0 +1,262 @@
+
+<!doctype html>
+
+<html>
+<head>
+  <meta name="viewport" content="width=device-width, minimum-scale=1.0, initial-scale=1.0, user-scalable=yes">
+  <meta name="theme-color" content="#4F7DC9">
+  <meta charset="UTF-8">
+  <title>Snorkel beginners guide</title>
+  <link rel="stylesheet" href="//fonts.googleapis.com/css?family=Source+Code+Pro:400|Roboto:400,300,400italic,500,700|Roboto+Mono">
+  <link rel="stylesheet" href="//fonts.googleapis.com/icon?family=Material+Icons">
+  <link rel="stylesheet" href="https://storage.googleapis.com/codelab-elements/codelab-elements.css">
+  <style>
+    .success {
+      color: #1e8e3e;
+    }
+    .error {
+      color: red;
+    }
+  </style>
+</head>
+<body>
+  <google-codelab-analytics gaid="UA-49880327-14"></google-codelab-analytics>
+  <google-codelab codelab-gaid=""
+                  id="snorkel_tut"
+                  title="Snorkel beginners guide"
+                  environment="web"
+                  feedback-link="https://gitlab.com/yashashah5895">
+    
+      <google-codelab-step label="Overview" duration="1">
+        <h2 is-upgraded>Contents</h2>
+<ul>
+<li>Introduction to Snorkel</li>
+<li>Simple Labelling Task</li>
+<li>Introduction to Labelling Functions</li>
+<li>Analysis and performance evaluation</li>
+<li>Bringing LFs together!</li>
+<li>Training a Classifier</li>
+<li>Further Steps</li>
+</ul>
+
+
+      </google-codelab-step>
+    
+      <google-codelab-step label="Introduction" duration="2">
+        <ul>
+<li>Snorkel is a system for programmatically building and managing training datasets. In Snorkel, users can <em>develop</em> training datasets in hours or days rather than hand-labeling them over weeks or months.</li>
+<li>The core idea is that we create multiple labeling functions that label a training point. We don&#39;t hand label the training set, but we keep a validation set just so we could measure how good the functions were.</li>
+<li>The problem is we don&#39;t have ground truth for these labeling functions whenever we are training so there&#39;s no way to determine the accuracy easily.</li>
+<li>What we do is have a generative model where multiple labeling functions are created based on certain guidance, conditions, and expertise. — <strong>NOTE</strong> Currently, Windows is not supported natively. So after doing a bit of manual installation of specific packages with a supported version, it should work. Make sure to install a specific version of Pytorch (Because letting it install via requirements of snorkel or docker image might throw a Pytorch memory error). Also, make sure to install everything in a virtual environment. Other options to run on windows are through a Linux subsystem (WSL) or as a docker image.</li>
+</ul>
+
+
+      </google-codelab-step>
+    
+      <google-codelab-step label="Simple labeling task" duration="3">
+        <p>This tutorial will serve as a basic guide to data labeling, building simple labeling functions for classifying youtube comments as ham and spam. Additionally, it will also show how to integrate MLflow into this, to keep track of all the models.</p>
+<p>By default, you can load up the dataset directly by cloning <a href="https://github.com/snorkel-team/snorkel-tutorials" target="_blank">Snorkel Tutorials</a>  and writing <br><code>from utils import load_spam_dataset</code><br> It downloads the raw CSV files from the internet, divides them into splits, converts them into DataFrames, and shuffles them. The dataset contains comments from 5 of the most popular YouTube videos during a period between 2014 and 2015. But because of the Linux filesystem, it doesn&#39;t work. So I have created a function that replicates the same job. Download the data set from <a href="https://www.kaggle.com/goneee/youtube-spam-classifiedcomments" target="_blank">here</a></p>
+<pre><code>import pandas as pd
+import glob
+
+def data_loader():
+    path = r&#39;directory of dataset&#39;
+    all_files = glob.glob(path + &#34;/*.csv&#34;)
+    li = []
+
+    for filename in all_files:
+        df = pd.read_csv(filename, index_col=None, header=0)
+        li.append(df)
+    
+    frame = pd.concat(li, axis=0, ignore_index=True)
+    
+    frame = shuffle(frame)
+    train = frame.iloc[0:1369,:-1]
+    dev = frame[500:900]
+    validation = frame[1370:1663]
+    test = frame[1664:]  
+    return test,train,dev,validation
+</code></pre>
+<p>The splits are as explained below:</p>
+<ul>
+<li><strong>Training Set</strong>: The largest split of the dataset, and the one without ground truth (&#34;gold&#34;) labels. We will generate labels for these data points with weak supervision.</li>
+<li>[Optional]  <strong>Development Set</strong>: A small labeled subset of the training data (e.g. 100 points) to guide LF development. See the note below.</li>
+<li><strong>Validation Set</strong>: A small labeled set used to tune hyperparameters while training the classifier.</li>
+<li><strong>Test Set</strong>: A labeled set for a final evaluation of our classifier. This set should only be used for final evaluation,  <em>not</em>  error analysis.<pre><code>#For clarity, we define constants to represent the class labels for spam, ham, and abstaining.
+ABSTAIN = -1
+HAM = 0
+SPAM = 1
+</code></pre>
+Introduction to Labelling functions<strong>Labeling functions (LFs) help users encode domain knowledge and other supervision sources programmatically.</strong> LFs are heuristics that take as input a data point and either assign a label to it (in this case,  <code>HAM</code>  or  <code>SPAM</code>) or abstain (don&#39;t assign any label). Labeling functions can be  <em>noisy</em>: they don&#39;t have perfect accuracy and don&#39;t have to label every data point. Moreover, different labeling functions can overlap (label the same data point) and even conflict (assign different labels to the same data point). There are many ways (as explained above) to determine labeling functions. Here I have shown two of the ways:<ul>
+<li>Keyword searches_: looking for specific words in a sentence</li>
+<li>Heuristic labeling functions Labeling functions in Snorkel are created with the <code>@labeling_function</code><a href="https://snorkel.readthedocs.io/en/master/packages/_autosummary/labeling/snorkel.labeling.labeling_function.html" target="_blank">decorator</a>. The <a href="https://realpython.com/primer-on-python-decorators/" target="_blank">decorator</a> can be applied to <em>any Python function</em> that returns a label for a single data point. Here is one example <code>python<br>from snorkel.labeling import labeling_function<br>@labeling_function()<br>def check(x):<br>return SPAM if &#34;check&#34; in x.text.lower() else ABSTAIN<br></code></li>
+</ul>
+</li>
+</ul>
+<p>which checks the string for this particular word. Likewise, usually, you define certain keywords. But instead of writing redundant functions we create a labeling function <strong>class</strong> which takes up keywords so we don&#39;t have to manually write functions for each keyword.</p>
+<pre><code>from snorkel.labeling import LabelingFunction 
+#This is Labelling function class not labeling FUNCTION!
+
+def keyword_lookup(x, keywords, label):
+    if any(word in x.CONTENT.lower() for word in keywords):
+        return label
+    return ABSTAIN
+
+def make_keyword_lf(keywords, label=SPAM):
+    return LabelingFunction(
+        name=f&#34;keyword_{keywords[0]}&#34;,
+        f=keyword_lookup,
+        resources=dict(keywords=keywords, label=label),
+    )
+ 
+ &#34;&#34;&#34;Spam comments talk about &#39;my channel&#39;, &#39;my video&#39;, etc.&#34;&#34;&#34;
+keyword_my = make_keyword_lf(keywords=[&#34;my&#34;])
+
+&#34;&#34;&#34;Spam comments ask users to subscribe to their channels.&#34;&#34;&#34;
+keyword_subscribe = make_keyword_lf(keywords=[&#34;subscribe&#34;])
+
+&#34;&#34;&#34;Spam comments post links to other channels.&#34;&#34;&#34;
+keyword_link = make_keyword_lf(keywords=[&#34;http&#34;])
+
+&#34;&#34;&#34;Spam comments make requests rather than commenting.&#34;&#34;&#34;
+keyword_please = make_keyword_lf(keywords=[&#34;please&#34;, &#34;plz&#34;])
+
+&#34;&#34;&#34;Ham comments actually talk about the video&#39;s content.&#34;&#34;&#34;
+keyword_song = make_keyword_lf(keywords=[&#34;song&#34;], label=HAM)
+
+</code></pre>
+<p>Here is one heuristic labelling function</p>
+<pre><code>@labeling_function()
+def short_comment(x):
+    &#34;&#34;&#34;Ham comments are often short, such as &#39;cool video!&#39;&#34;&#34;&#34;
+    return HAM if len(x.CONTENT.split()) &lt; 5 else ABSTAIN
+</code></pre>
+<p>Here we also use MLflow to define those labelling functions as parameters.</p>
+<pre><code>  with mlflow.start_run():
+    mlflow.log_param(&#34;keywords LF&#34;,&#34;my, subscribe, link, please, song&#34;)
+    mlflow.log_param(&#34;heuristic LF&#34;, &#34;short comment&#34;)
+</code></pre>
+
+
+      </google-codelab-step>
+    
+      <google-codelab-step label="Analysis and performance evaluation" duration="0">
+        <pre><code>from snorkel.labeling import PandasLFApplier
+lfs = [
+    keyword_my,
+    keyword_subscribe,
+    keyword_link,
+    keyword_please,
+    keyword_song,
+    short_comment,
+    ]
+applier = PandasLFApplier(lfs=lfs)
+L_train = applier.apply(df=train)
+L_dev = applier.apply(df=dev)
+</code></pre>
+<p>Snorkel provides a tool for common LF analysis to calculate statistics like coverage of these LFs (i.e., the percentage of the dataset that they label). Apart from that, we get:</p>
+<ul>
+<li><strong>Polarity</strong>: The set of unique labels this LF outputs (excluding abstains)</li>
+<li><strong>Coverage</strong>: The fraction of the dataset the LF labels</li>
+<li><strong>Overlaps</strong>: The fraction of the dataset where this LF and at least one other LF label</li>
+<li><strong>Conflicts</strong>: The fraction of the dataset where this LF and at least one other LF label and disagree</li>
+<li><strong>Correct</strong>: The number of data points this LF labels correctly (if gold labels are provided)</li>
+<li><strong>Incorrect</strong>: The number of data points this LF labels incorrectly (if gold labels are provided)</li>
+<li><strong>Empirical Accuracy</strong>: The empirical accuracy of this LF (if gold labels are provided) (Here <strong>gold labels</strong> mean true labels, if available)</li>
+</ul>
+<p>Here, shown one of the instance</p>
+<pre><code>from snorkel.labeling import LFAnalysis
+
+LFAnalysis(L=L_train, lfs=lfs).lf_summary()
+</code></pre>
+<pre><code>| Tables        | J | COVERAGE  | OVERLAPS  | CONFLICTS | CORRECT | INCORRECT | EMP. ACC.|
+| -------------:|:-:|----------:|----------:|----------:|--------:|----------:|---------:|
+| CHECK_OUT     | 0 | 0.22      | 0.22        | 0.1        | 22      | 0          |1.000000  |
+| CHECK         | 1 | 0.30      | 0.22        | 0.1        | 29      | 1            |0.966667  |    
+
+</code></pre>
+<p>Further to improve our labeling functions, snorkel provides a helper method <code>get_label_buckets(...)</code> groups data points by their predicted label and true label. For example, we can find the indices of data points that the LF labeled <code>SPAM</code> that belong to class <code>HAM</code>. This may give ideas for where the LF could be made more specific. ( Note that we can only do if we have gold-labeled dev set available!)</p>
+<pre><code>from snorkel.analysis import get_label_buckets
+
+buckets = get_label_buckets(Y_dev, L_dev[:, 1])
+df_dev.iloc[buckets[(HAM, SPAM)]]
+
+&#39;&#39;&#39; Here the tutorial performs an additional test, make buckets for training dataset to check if the intuition
+was correct or not. In real-world, that wouldn&#39;t be possible most of the time!&#39;&#39;&#39;
+</code></pre>
+<pre><code>| Author       | Date                | Text                                   | Label  | Video |
+| Eanna Cusack | 2014-01-20T22:20:59 | Im just to check how much views it has | 0      | 1     |
+</code></pre>
+<p>Other complex ways to write labeling functions include (but not limited to) regular expression, preprocessors(Textblob), Complex preprocessors(NLP). </p>
+
+
+      </google-codelab-step>
+    
+      <google-codelab-step label="Putting together" duration="4">
+        <p>We convert these functions into noise aware probabilistic functions i.e. Take the consideration of all the label functions of what they think the label is and try to reduce noise as much as possible (or confidence-weighted) label per data point. A simple baseline for doing this is to take the majority vote on a per-data point basis: if more LFs voted SPAM than HAM, label it SPAM (and vice versa).</p>
+<pre><code>from snorkel.labeling import MajorityLabelVoter
+
+majority_acc = majority_model.score(L=L_valid, Y=validation.iloc[:,-1])[&#34;accuracy&#34;]
+print(f&#34;{&#39;Majority Vote Accuracy:&#39;:&lt;25} {majority_acc * 100:.1f}%&#34;)
+mlflow.log_metric(&#39;Majority_Vote_Acc&#39;,majority_acc * 100)
+</code></pre>
+<p>Another way to convert these functions is to use LabelModel. The <code>LabelModel</code> can learn weights for the labeling functions using only the label matrix as input. Note that no gold labels are used during the training process. The only information we need is the label matrix, which contains the output of the LFs on our training set.</p>
+
+
+      </google-codelab-step>
+    
+      <google-codelab-step label="Training a Classifier" duration="0">
+        <p><strong>The output of the Snorkel  </strong><code>LabelModel</code><strong>  is just a set of labels which can be used with most popular libraries for performing supervised learning, such as TensorFlow, Keras, PyTorch, Scikit-Learn, Ludwig, and XGBoost.</strong> In this tutorial, we demonstrate using classifiers from <a href="https://keras.io/" target="_blank">Keras</a> and <a href="https://scikit-learn.org/" target="_blank">Scikit-Learn</a>.</p>
+<h2 is-upgraded>Featurization</h2>
+<p>For simplicity and speed, we use a simple &#34;bag of n-grams&#34; feature representation: each data point is represented by a one-hot vector marking in which words or 2-word combinations are present in the comment text.</p>
+<pre><code>from sklearn.feature_extraction.text import CountVectorizer
+
+vectorizer = CountVectorizer(ngram_range=(1, 2))
+X_train = vectorizer.fit_transform(df_train_filtered.text.tolist())
+
+X_dev = vectorizer.transform(df_dev.text.tolist())
+X_valid = vectorizer.transform(df_valid.text.tolist())
+X_test = vectorizer.transform(df_test.text.tolist())
+</code></pre>
+<h2 is-upgraded>Keras Classifier with Probabilistic Labels</h2>
+<p>We&#39;ll use Keras, a popular high-level API for building models in TensorFlow, to build a simple logistic regression classifier. We compile it with a  <code>categorical_crossentropy</code>  loss so that it can handle probabilistic labels instead of integer labels. We use the common settings of an <code>Adam</code> optimizer and early stopping (evaluating the model on the validation set after each epoch and reloading the weights from when it achieved the best score). For more information on Keras, see the <a href="https://keras.io/" target="_blank">Keras documentation</a>.</p>
+<pre><code>from snorkel.analysis import metric_score
+from snorkel.utils import preds_to_probs
+from utils import get_keras_logreg, get_keras_early_stopping
+
+# Define a vanilla logistic regression model with Keras
+keras_model = get_keras_logreg(input_dim=X_train.shape[1])
+
+keras_model.fit(
+    x=X_train,
+    y=probs_train_filtered,
+    validation_data=(X_valid, preds_to_probs(Y_valid, 2)),
+    callbacks=[get_keras_early_stopping()],
+    epochs=50,
+    verbose=0,
+)
+</code></pre>
+<pre><code>preds_test = keras_model.predict(x=X_test).argmax(axis=1)
+test_acc = metric_score(golds=Y_test, preds=preds_test, metric=&#34;accuracy&#34;)
+print(f&#34;Test Accuracy: {test_acc * 100:.1f}%&#34;)
+mlflow.log_metric(&#34;test_accuracy&#34;, test_acc*100)
+
+&#39;&#39;&#39; Save this keras model in MLflow&#39;&#39;&#39;
+
+from mlflow import keras
+mlflow.keras.save_model(keras_model,path = f&#39;runs&#39;)
+</code></pre>
+<p><strong>NOTE</strong> This tutorial is adopted from official Snorkel documentation and tutorial literature and parts of it are directly used. See more <a href="https://www.snorkel.org/use-cases/01-spam-tutorial" target="_blank">here</a></p>
+
+
+      </google-codelab-step>
+    
+  </google-codelab>
+
+  <script src="https://storage.googleapis.com/codelab-elements/native-shim.js"></script>
+  <script src="https://storage.googleapis.com/codelab-elements/custom-elements.min.js"></script>
+  <script src="https://storage.googleapis.com/codelab-elements/prettify.js"></script>
+  <script src="https://storage.googleapis.com/codelab-elements/codelab-elements.js"></script>
+
+</body>
+</html>
